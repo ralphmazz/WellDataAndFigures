@@ -1,0 +1,431 @@
+---
+title: "Florida Well Data"
+author: "Ralph Mazzuoccolo"
+date: "2023-06-06"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(shiny)
+library(lubridate)
+library(ggrepel)
+library(ggmap)
+```
+
+
+```{r}
+well_data <- read.delim("LabDataExport_20220908.txt", header = TRUE, sep = "|", dec = ".", fill = TRUE)
+```
+
+
+```{r}
+colnames(well_data)
+table(well_data$ANALYTE)
+
+#focus on nitrate, nitrite, and both as total, filter by these pollutants, show time series, light color means less polluted, dark means more polluted, tigris focus on counties
+pollutants = well_data[well_data$ANALYTE %in% c('NITRATE (TOTAL AS N)', 'NITRITE (TOTAL AS N)', 'TOTAL NITRATE+NITRITE'), ]
+
+```
+
+```{r}
+well_sites <- readxl::read_excel("WELL.xlsx")
+```
+
+
+```{r}
+#Osceola County data
+#I would like to have filtered data for this county, a summarized table on the number of testings each year, and the average testing results. After that, if you could show the locations of the testing wells on the map, that would be greater. 
+osceola = well_sites[well_sites$COUNTY %in% c('OSCEOLA'),]
+#pollutants for Osceola
+osceola_poll <- pollutants[pollutants$WELL_COUNTY %in% c('OSCEOLA'),]
+#eliminate duplicate entries
+clean_well_data <- well_data %>% distinct(SAMPLE_ID, FLUWID, .keep_all = TRUE)
+osceola_pollutants <- osceola_poll %>% distinct(SAMPLE_ID, FLUWID, .keep_all = TRUE)
+osceola_pollutants
+#combine data sets
+osceola_coordinates <- merge(osceola_pollutants, osceola, by="FLUWID")
+#AVG testing results
+osceola_pollutants$VALUE <- as.numeric(as.character(osceola_pollutants$VALUE))
+mean(osceola_pollutants$VALUE, na.rm = TRUE) #units are mg/L
+```
+
+```{r}
+#Figures
+#make sure all counties are correctly labeled.
+pollutants$WELL_COUNTY<- toupper(pollutants$WELL_COUNTY)
+nitrate_nitrite <- merge(pollutants, well_sites, by = "FLUWID")
+nitrate_nitrite$WELL_COUNTY<- toupper(nitrate_nitrite$WELL_COUNTY)
+nitrate_nitrite$COUNTY<- toupper(nitrate_nitrite$COUNTY)
+#extracting year
+nitrate_nitrite$YEAR <- year(nitrate_nitrite$SAMPLE_DATE)
+nitr_count <- as.data.frame(table(nitrate_nitrite$YEAR))
+nitr_count <- rename(nitr_count, YEAR = Var1, count = Freq)
+nitrate_nitrite$VALUE <- as.numeric(as.character(nitrate_nitrite$VALUE))
+mean(nitrate_nitrite$VALUE, na.rm = TRUE) #units are mg/L
+average_per_year <- nitrate_nitrite %>%
+group_by(YEAR) %>%
+summarise(Average_Value = mean(VALUE, na.rm = TRUE)) # na.rm = TRUE will exclude NA values
+# Calculate average testing results per year for each type of analyte
+avg_results <- nitrate_nitrite %>%
+group_by(YEAR, ANALYTE) %>%
+summarise(Average_Value = mean(VALUE, na.rm = TRUE)) # na.rm = TRUE will exclude NA values
+average_results_by_county <- nitrate_nitrite %>%
+group_by(COUNTY, ANALYTE, YEAR) %>%
+summarise(Average_Value = mean(VALUE)) %>%
+pivot_wider(names_from = ANALYTE, values_from = Average_Value)
+
+```
+
+```{r}
+#Actual Figures
+ggplot(nitr_count, aes(x = YEAR, y = count)) +
+geom_bar(stat = "identity", fill = "steelblue") +
+theme_minimal() 
+labs(x = "Year", y = "Count", title = "Well Testings per Year")
+
+# Create line plot of average values per year
+ggplot(average_per_year, aes(x = YEAR, y = Average_Value)) +
+  geom_line() +
+  theme_minimal() +
+  labs(x = "Year", y = "Average Value", title = "Average Value per Year")
+
+
+ggplot(avg_results, aes(x = YEAR, y = Average_Value, color = ANALYTE)) 
+geom_line() 
+theme_minimal() 
+labs(x = "Year", y = "Average Testing Result", title = "Average Testing Results per Year") 
+scale_color_discrete(name = "Analyte Type")
+
+# Create line plot of average values per year
+ggplot(avg_results, aes(x = YEAR, y = Average_Value, color = ANALYTE)) +
+  geom_line() +
+  theme_minimal() +
+  labs(x = "Year", y = "Average Testing Result", title = "Average Testing Results per Year") +
+  scale_color_discrete(name = "Analyte Type")
+
+# Calculate yearly averages within each county and filter out averages less than 10
+average_per_year_and_county <- nitrate_nitrite %>%
+  group_by(YEAR, COUNTY, ANALYTE) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE)) %>%
+  filter(Average_Value >= 10)
+
+# Calculate the overall average for each county
+county_averages <- average_per_year_and_county %>%
+  group_by(COUNTY) %>%
+  summarise(Overall_Average = mean(Average_Value, na.rm = TRUE))
+
+# Get the top 5 counties
+top_counties <- county_averages %>%
+  arrange(desc(Overall_Average)) %>%
+  head(5)
+
+# Filter the yearly averages to only include the top counties
+average_per_year_top_counties <- average_per_year_and_county %>%
+  filter(COUNTY %in% top_counties$COUNTY)
+
+# Pivot the data to a wider format
+average_per_year_top_counties_wide <- average_per_year_top_counties %>%
+  pivot_wider(names_from = ANALYTE, values_from = Average_Value)
+
+```
+
+
+```{r}
+
+# Creating the vector
+data <- c("ALACHUA", 11.95450, "BRADFORD", 36.60000, "COLUMBIA", 13.98937, 
+          "DADE", 14.00000, "DESOTO", 16.08750, "DIXIE", 19.50000,
+          "ESCAMBIA", 23.00000, "GILCHRIST", 16.97358, "HAMILTON", 16.00100,
+          "HARDEE", 14.49438, "HERNANDO", 12.29900, "HIGHLANDS", 11.25846,
+          "HILLSBOROUGH", 15.43959, "JEFFERSON", 14.55083, "LAFAYETTE", 13.39395,
+          "LEON", 24.84301, "LEVY", 18.75417, "MADISON", 13.00000, 
+          "MARTIN", 15.04583, "ORANGE", 10.57198, "PASCO", 11.72429, 
+          "POLK", 10.57613, "PUTNAM", 11.25000, "SANTA ROSA", 11.00000,
+          "ST. LUCIE", 15.75000, "SUMTER", 17.00000, "SUWANNEE", 13.70958,
+          "UNION", 12.75000, "VOLUSIA", 14.00000)
+
+# Creating a data frame
+df <- data.frame(County = data[c(TRUE, FALSE)], 
+                 Average = as.numeric(data[c(FALSE, TRUE)]))
+
+# Plotting
+library(ggplot2)
+ggplot(df, aes(x = reorder(County, -Average), y = Average)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = "County", y = "Average", title = "Average Values per County (Unsafe)")
+```
+
+```{r}
+ggplot(df, aes(x = Average, y = reorder(County, Average))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_minimal() +
+  labs(x = "Average", y = "County", title = "Average Values per County")
+
+```
+
+```{r}
+ggplot(df, aes(x = reorder(County, -Average), y = Average)) +
+  geom_point(size = 4, color = "steelblue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = "County", y = "Average", title = "Average Values per County")
+
+```
+
+
+
+```{r}
+# Filter the data for wells with nitrate level above 10 mg/L
+high_nitrate_wells <- nitrate_nitrite %>%
+  filter(ANALYTE == 'NITRATE (TOTAL AS N)' & VALUE > 10)
+
+# Count the number of these wells in each county
+high_nitrate_counties <- high_nitrate_wells %>%
+  group_by(COUNTY) %>%
+  summarise(Num_Wells = n(), .groups = 'drop')
+
+# Get the top 10 counties
+top_counties <- high_nitrate_counties %>%
+  arrange(desc(Num_Wells)) %>%
+  head(10)
+
+# Create a bar plot
+ggplot(top_counties, aes(x = reorder(COUNTY, Num_Wells), y = Num_Wells)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "", y = "", title = "Counties with the Most Wells Above 10 mg/L of Nitrate")
+
+```
+
+```{r}
+# Filter the data for wells with nitrate level above 10 mg/L
+high_nitrate_wells <- nitrate_nitrite %>%
+  filter(ANALYTE == 'NITRATE (TOTAL AS N)' & VALUE > 10)
+
+# Count the number of these wells in each county
+high_nitrate_counties <- high_nitrate_wells %>%
+  group_by(COUNTY) %>%
+  summarise(Num_Wells = n(), .groups = 'drop')
+
+# Print the dataframe
+print(high_nitrate_counties)
+
+```
+
+```{r}
+
+# Filter the data for wells with nitrate
+nitrate_wells <- nitrate_nitrite %>%
+  filter(ANALYTE == 'NITRATE (TOTAL AS N)')
+
+# Calculate the average nitrate level in each county
+average_nitrate_counties <- nitrate_wells %>%
+  group_by(COUNTY) %>%
+  summarise(Average_Nitrate = mean(VALUE, na.rm = TRUE), .groups = 'drop')
+
+# Print the dataframe
+print(average_nitrate_counties)
+
+```
+
+```{r}
+# Calculate the total number of wells in each county
+total_wells_county <- nitrate_wells %>%
+  group_by(COUNTY) %>%
+  summarise(Total_Wells = n(), .groups = 'drop')
+
+# Merge the two dataframes
+county_data <- merge(average_nitrate_counties, total_wells_county, by = "COUNTY")
+
+# Create a scatter plot
+ggplot(county_data, aes(x = Total_Wells, y = Average_Nitrate)) +
+  geom_point() +
+  labs(x = "Total Number of Wells", y = "Average Nitrate Level (mg/L)", title = "Average Nitrate Level vs Total Number of Wells per County") +
+  theme_minimal()
+
+```
+
+```{r}
+# Create a scatter plot
+ggplot(county_data, aes(x = Total_Wells, y = Average_Nitrate)) +
+  geom_point() +
+  geom_text(data = subset(county_data, Total_Wells > 500), aes(label = COUNTY), vjust = -1) +
+  labs(x = "Total Number of Wells", y = "Average Nitrate Level (mg/L)", title = "Average Nitrate Level vs Total Number of Wells per County") +
+  theme_minimal()
+
+```
+
+```{r}
+nitrate_nitrite %>%
+  group_by(ANALYTE) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE))
+
+```
+
+```{r}
+#nitrate only
+nitrate_only <- nitrate_nitrite %>%
+  filter(ANALYTE %in% c("NITRATE (TOTAL AS N)", "TOTAL NITRATE+NITRITE"))
+# Create nitrate_only dataset
+nitrate_only <- nitrate_nitrite %>%
+  filter(ANALYTE %in% c("NITRATE (TOTAL AS N)", "TOTAL NITRATE+NITRITE"))
+
+# Extract year and convert VALUE column to numeric
+nitrate_only$YEAR <- year(nitrate_only$SAMPLE_DATE)
+nitrate_only$VALUE <- as.numeric(as.character(nitrate_only$VALUE))
+
+# Calculate the average testing results per year for each type of analyte
+average_results <- nitrate_only %>%
+  group_by(YEAR, ANALYTE) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE)) # na.rm = TRUE will exclude NA values
+
+# Calculate yearly averages within each county and filter out averages less than 10
+average_per_year_and_county <- nitrate_only %>%
+  group_by(YEAR, COUNTY, ANALYTE) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE)) %>%
+  filter(Average_Value >= 10)
+
+# Calculate the overall average for each county
+county_averages <- average_per_year_and_county %>%
+  group_by(COUNTY) %>%
+  summarise(Overall_Average = mean(Average_Value, na.rm = TRUE))
+
+# Get the top 5 counties
+top_counties <- county_averages %>%
+  arrange(desc(Overall_Average)) %>%
+  head(5)
+
+# Filter the yearly averages to only include the top counties
+average_per_year_top_counties <- average_per_year_and_county %>%
+  filter(COUNTY %in% top_counties$COUNTY)
+
+# Pivot the data to a wider format
+average_per_year_top_counties_wide <- average_per_year_top_counties %>%
+  pivot_wider(names_from = ANALYTE, values_from = Average_Value)
+
+# Pivot the data back to a long format suitable for graphing
+average_per_year_top_counties_long <- average_per_year_top_counties_wide %>%
+  pivot_longer(cols = c('NITRATE (TOTAL AS N)', 'TOTAL NITRATE+NITRITE'),
+               names_to = "Analysis", values_to = "Average_Value")
+
+# Plot the data
+# Calculate the average values for each county
+avg_and_count_df <- nitrate_only %>%
+  group_by(COUNTY) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE), 
+            Sample_Size = n()) %>%
+  arrange(desc(Average_Value))
+
+# View the table
+print(avg_and_count_df)
+
+#accounting for sample size
+# Generate a scatter plot of the average values against the sample sizes for each county
+ggplot(avg_and_count_df, aes(x = Sample_Size, y = Average_Value)) +
+  geom_point() +
+  geom_text(data = subset(avg_and_count_df, Sample_Size > 1000), aes(label = COUNTY), vjust = -1) +
+  theme_minimal() +
+  labs(x = "Wells", y = "Nitrate (mg/L)", title = "Average Nitrate Levels vs Number of Wells in Each County")
+
+```
+
+```{r}
+# Average and count for each county
+avg_and_count_df <- nitrate_only %>%
+  group_by(COUNTY) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE),
+            Sample_Size = n())
+avg_and_count_df
+
+# Bar chart of top 10 counties by average value
+avg_and_count_df %>%
+  top_n(10, Average_Value) %>%
+  ggplot(aes(x = reorder(COUNTY, Average_Value), y = Average_Value)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "", y = "Nitrate (mg/L)", title = "10 Counties with Highest Average Nitrate Levels")
+
+# Create a dataframe with the average nitrate value and count of wells per county
+avg_and_count_df <- nitrate_only %>%
+  group_by(COUNTY) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE),
+            Total_Wells = n())
+
+
+# Filter the dataset to include only wells where the nitrate level exceeds 10 mg/L
+high_nitrate_wells <- nitrate_only %>%
+  filter(VALUE > 10)
+
+# Count the number of such wells in each county
+high_nitrate_count <- high_nitrate_wells %>%
+  group_by(COUNTY) %>%
+  summarise(Num_Wells = n())
+
+# Keep only the top 10 counties with the most such wells
+top_counties <- high_nitrate_count %>%
+  top_n(10, Num_Wells)
+
+# Create a bar plot
+ggplot(top_counties, aes(x = reorder(COUNTY, Num_Wells), y = Num_Wells)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "", y = "", title = "Counties with the Most Wells Above 10 mg/L of Nitrate")
+
+```
+
+```{r}
+# Create a bar chart of the average nitrate values for each county
+avg_and_count_df %>%
+  ggplot(aes(x = reorder(COUNTY, Average_Value), y = Average_Value)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "County", y = "Average Nitrate Levels (mg/L)", title = "Average Nitrate Levels per County")
+```
+
+```{r}
+#OSCEOLA DATA (just in case)
+osceola_data <- nitrate_only %>%
+  filter(COUNTY == "OSCEOLA")
+average_osceola <- osceola_data %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE))
+
+print(average_osceola)
+unsafe_wells_osceola <- osceola_data %>%
+  filter(VALUE > 10)
+
+num_unsafe_wells_osceola <- nrow(unsafe_wells_osceola)
+
+print(num_unsafe_wells_osceola)
+
+analyte_counts_osceola <- osceola_data %>%
+  group_by(ANALYTE) %>%
+  summarise(n = n())
+
+print(analyte_counts_osceola)
+
+# Filter the data for 'OSCEOLA'
+osceola_data <- nitrate_only %>%
+  filter(COUNTY == 'OSCEOLA')
+
+# Summarize the data by 'YEAR'
+yearly_summary_osceola <- osceola_data %>%
+  group_by(YEAR) %>%
+  summarise(Number_of_Testings = n(),
+            Average_Result = mean(VALUE, na.rm = TRUE))
+
+# Print the summary
+print(yearly_summary_osceola)
+
+
+```
+

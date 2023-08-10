@@ -1,0 +1,292 @@
+---
+title: "Well Data Figures"
+author: "Ralph Mazzuoccolo"
+date: "2023-08-02"
+output: html_document
+---
+
+```{r}
+library(shiny)
+library(dplyr)
+library("tidyverse")
+library(data.table)
+
+unique(merged_data$WELL_NAME)
+####################### Number of testings each year and average testing results
+merged_data <- merged_data %>%
+  mutate(VALUE = as.numeric(VALUE),
+         VALUE = ifelse(is.na(VALUE), 0, VALUE))
+
+# Extract year from the date
+merged_data$YEAR <- format(merged_data$SAMPLE_DATE, "%Y")
+
+# Summarize number of testings each year
+testing_count <- merged_data %>%
+  group_by(YEAR) %>%
+  summarise(Testing_Count = n())
+
+merged_data <- merged_data %>%
+  mutate(VALUE = ifelse(UNITS == "mg/L", VALUE * 1000, VALUE),
+         UNITS = ifelse(UNITS == "mg/L", "ug/L", UNITS))
+
+# Calculate average testing results
+average_results <- merged_data %>%
+  group_by(ANALYTE, YEAR) %>%
+  summarise(Average_Value = mean(VALUE)) %>%
+  pivot_wider(names_from = ANALYTE, values_from = Average_Value)
+
+average_results <- average_results %>%
+  add_column(Units = "ug/L")
+
+# Find if "PFOA" and "PFOS" exist in the ANALYTE column
+has_pfoa_pfos <- merged_data %>%
+  filter(ANALYTE %in% c("PFOA", "PFOS"))
+
+# View the filtered table
+has_pfoa_pfos # Found no observations
+
+```
+
+```{r}
+# Load required libraries
+library(leaflet)
+library(dplyr)
+library(RColorBrewer)
+library(scales)
+library(lattice)
+
+merged_data <- read_delim("data/OSCEOLA_merge.csv", delim = ",")
+well_data <- merged_data
+
+# Define the counties available in the dataset
+counties <- unique(well_data$WELL_COUNTY)
+
+# Define the units available in the dataset
+units <- unique(well_data$UNITS)
+
+# Define the analytes available in the dataset
+analytes <- unique(well_data$ANALYTE)
+
+#throwaway
+yearly_avg <- avg_results %>%
+pivot_longer(cols = c('NITRATE (TOTAL AS N)', 'NITRITE (TOTAL AS N)', 'TOTAL NITRATE+NITRITE'),
+               names_to = "Analyte", values_to = "Average_Value")
+
+ggplot(average_per_year_long, aes(x = YEAR, y = Average_Value, color = ANALYTE)) +
+  geom_line() +
+  labs(x = "Year", y = "Average Value", color = "Analyte",
+       title = "Average Values per Year by Analyte") +
+  theme_minimal()
+
+ # Pivot the data to a wider format
+average_per_year_and_county_wide <- average_per_year_and_county %>%     pivot_wider(names_from = ANALYTE, values_from = Average_Value)
+# Pivot the data back to a long format suitable for graphing
+average_per_year_and_county_long <- average_per_year_and_county_wide %>%
+  pivot_longer(cols = c('NITRATE (TOTAL AS N)', 'NITRITE (TOTAL AS N)', 'TOTAL NITRATE+NITRITE'), names_to = "Analyte", values_to = "Average_Value")
+# Plot the data
+ggplot(average_per_year_and_county_long, aes(x = YEAR, y = Average_Value, color = Analyte)) 
+geom_line() 
+facet_wrap(~COUNTY) 
+# Separate plot for each county
+labs(x = "Year", y = "Average Value", color = "Analysis",
+title = "Average Values per Year by Analysis and County") +
+theme_minimal()
+
+```
+
+
+```{r}
+library(leaflet)
+library(dplyr)
+library(RColorBrewer)
+library(scales)
+library(lattice)
+library(DT)
+
+# Load the global.R file
+source("global.R")
+
+function(input, output, session) {
+  
+  ## Interactive Map ###########################################
+  
+  # Create the map
+  output$map <- renderLeaflet({
+    leaflet() %>%
+      addTiles() %>%
+      setView(lng = -93.85, lat = 37.45, zoom = 4)
+  })
+  
+  # Filter the data for Osceola County
+  osceola_data <- reactive({
+    subset(merged_data, WELL_COUNTY == "OSCEOLA")
+  })
+  
+  # Summary table: Number of testings each year
+  output$summaryTable <- renderDataTable({
+    summary_table <- osceola_data() %>%
+      group_by(YEAR) %>%
+      summarise(Num_Testings = n())
+    
+    summary_table
+  })
+  
+  # Summary table: Average testing results
+  output$averageTable <- renderDataTable({
+    average_table <- osceola_data() %>%
+      group_by(YEAR) %>%
+      # summarise(Average_Results = mean(TEST_RESULTS, na.rm = TRUE))
+    
+    average_table
+  })
+  
+  output$welltable <- DT::renderDataTable({
+    selected_counties <- input$counties
+    
+    filtered_data <- if (is.null(selected_counties) || "" %in% selected_counties) {
+      well_data
+    } else {
+      well_data[well_data$WELL_COUNTY %in% selected_counties, ]
+    }
+    
+    # Group the data by latitude, longitude, and county
+    grouped_data <- aggregate(ANALYTE ~ LATITUDE + LONGITUDE + WELL_COUNTY + FLUWID, data = filtered_data, FUN = paste, collapse = ", ")
+    
+    DT::datatable(grouped_data, options = list(pageLength = 10))
+  })
+  
+  testing_count <- read.csv("data/testing_count.csv")
+  
+  # Render the testing count data table
+  output$testing_table <- renderDataTable({
+    testing_count
+  })
+  
+  # Load the average results data
+  average_results <- read.csv("data/average_results.csv")
+  
+  # Render the average results data table
+  output$average_table <- renderDataTable({
+    average_results
+  })
+  
+  observe({
+    unique_coords <- unique(osceola_data()[, c("LATITUDE", "LONGITUDE", "WELL_COUNTY", "FLUWID")])
+    
+    popup_text <- lapply(1:nrow(unique_coords), function(i) {
+      coords <- unique_coords[i, ]
+      analytes <- osceola_data()[osceola_data()$LATITUDE == coords$LATITUDE & osceola_data()$LONGITUDE == coords$LONGITUDE, "ANALYTE"]
+      paste("FLUWID: ", coords$FLUWID,
+            "<br>",
+            "County: ", coords$WELL_COUNTY,
+            "<br>",
+            "Coordinates: [", coords$LATITUDE, ", ", coords$LONGITUDE, "]",
+            "<br>"
+            # ,"Analytes: ", paste(analytes, collapse = ", ")
+            )
+    })
+    
+    leafletProxy("map") %>%
+      clearMarkers() %>%
+      addMarkers(data = unique_coords,
+                 lng = ~LONGITUDE,
+                 lat = ~LATITUDE,
+                 popup = popup_text,
+                 # label = "Click for details",
+                 labelOptions = labelOptions(noHide = TRUE)
+      ) %>%
+      setView(lng = unique_coords$LONGITUDE[1], lat = unique_coords$LATITUDE[1], zoom = 12)
+  })
+  
+}
+```
+
+```{r}
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(shiny)
+library(lubridate)
+library(readxl)
+
+# Load data
+well_data <- read.delim("LabDataExport_20220908.txt", header = TRUE, sep = "|", dec = ".", fill = TRUE)
+```
+
+
+```{r}
+# Focusing on certain pollutants
+pollutants <- well_data %>% 
+  filter(ANALYTE %in% c('NITRATE (TOTAL AS N)', 'NITRITE (TOTAL AS N)', 'TOTAL NITRATE+NITRITE'))
+
+# Load well_sites data
+well_sites <- readxl::read_excel("WELL.xlsx")
+```
+
+
+```{r}
+# Merge pollutants and well_sites data
+data <- merge(pollutants, well_sites, by = "FLUWID")
+
+# Convert COUNTY and ANALYTE to upper case
+data <- data %>% 
+  mutate(COUNTY = toupper(COUNTY), 
+         ANALYTE = toupper(ANALYTE))
+
+# Extract year from SAMPLE_DATE
+data <- data %>% 
+  mutate(YEAR = year(SAMPLE_DATE))
+
+# Convert VALUE to numeric
+data <- data %>% 
+  mutate(VALUE = as.numeric(as.character(VALUE)))
+
+# Calculate average value per year per county per analyte
+average_per_year_and_county <- data %>%
+  group_by(YEAR, COUNTY, ANALYTE) %>%
+  summarise(Average_Value = mean(VALUE, na.rm = TRUE))
+
+# Filter out counties with average value over 10 mg/L
+counties_over_10 <- average_per_year_and_county %>%
+  group_by(COUNTY, ANALYTE) %>%
+  summarise(Overall_Average_Value = mean(Average_Value, na.rm = TRUE)) %>%
+  filter(Overall_Average_Value > 10)
+
+# Get top 5 counties
+top_counties <- counties_over_10 %>%
+  group_by(COUNTY) %>%
+  summarise(Overall_Average_Value = mean(Overall_Average_Value, na.rm = TRUE)) %>%
+  arrange(desc(Overall_Average_Value)) %>%
+  head(5)
+
+# Filter out the data for the top 5 counties
+average_per_year_top_counties <- average_per_year_and_county %>%
+  filter(COUNTY %in% top_counties$COUNTY)
+
+# Pivot the data back to a long format suitable for graphing
+average_per_year_top_counties_long <- average_per_year_top_counties %>%
+  pivot_longer(cols = -c(YEAR, COUNTY, ANALYTE),
+               names_to = "Analysis", values_to = "Average_Value")
+```
+
+
+```{r}
+# Plot data for top 5 counties
+ggplot(average_per_year_top_counties_long, aes(x = YEAR, y = Average_Value, color = ANALYTE)) +
+  geom_point() +
+  facet_wrap(~COUNTY) +  # Separate plot for each county
+  labs(x = "Year", y = "Average Value", color = "Analyte",
+       title = "Average Values per Year by Analysis and County (Top 5 Counties)") +
+  theme_minimal()
+
+# Plot data for counties with averages above 10
+ggplot(counties_over_10, aes(x = reorder(COUNTY, Overall_Average_Value), y = Overall_Average_Value, color = ANALYTE)) +
+  geom_point() +
+  labs(x = "County", y = "Average Value", color = "Analyte Type",
+       title = "Counties with Overall Average Value over 10 for Each Analyte") +
+  theme_minimal() +
+  coord_flip()  # This makes the plot horizontal; remove if you want a vertical plot
+
+```
+
